@@ -21,3 +21,7 @@ test-adapter-response *ARGS:
 # Run openai_adapter_cli example
 openai-adapter-cli *ARGS:
   cargo run --example openai_adapter_cli -- {{ARGS}}
+
+# Run HTTP server
+serve *ARGS:
+  cargo run -- {{ARGS}}

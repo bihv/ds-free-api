@@ -66,14 +66,19 @@ pub fn extract(req: &ChatCompletionRequest) -> Result<ToolContext, String> {
         instruction_lines.push("注意：一次只能调用一个工具。".to_string());
     }
 
-    instruction_lines.push(
-        "注意：当需要调用工具时，请严格按如下 XML 格式输出，不要添加任何解释性文字：".to_string(),
-    );
-    instruction_lines.push("<tool_calls>".to_string());
-    instruction_lines.push("<tool_call name=\"工具名\" arguments=\"{JSON参数}\" />".to_string());
-    instruction_lines.push("</tool_calls>".to_string());
     instruction_lines
-        .push("多个工具调用可在同一 <tool_calls> 标签内列出多个 <tool_call />。".to_string());
+        .push("注意：当需要调用工具时，请严格按如下格式输出，不要添加任何解释性文字：".to_string());
+    instruction_lines.push("<tool_calls>".to_string());
+    instruction_lines.push("[{\"name\": \"工具名\", \"arguments\": {参数JSON}}]".to_string());
+    instruction_lines.push("</tool_calls>".to_string());
+    instruction_lines.push("多个工具调用可在同一数组中列出多个对象。".to_string());
+    instruction_lines.push("输出示例：".to_string());
+    instruction_lines.push("<tool_calls>".to_string());
+    instruction_lines.push(
+        "[{\"name\": \"get_weather\", \"arguments\": {\"city\": \"北京\"}}, {\"name\": \"get_weather\", \"arguments\": {\"city\": \"上海\"}}]"
+            .to_string(),
+    );
+    instruction_lines.push("</tool_calls>".to_string());
 
     let defs_text = if has_tools(req) {
         let mut lines = vec!["你可以使用以下工具：".to_string()];

@@ -13,8 +13,8 @@
 //!   source <file>                          - 从文件读取命令执行
 //!   quit | exit                            - 退出并清理
 
-use ai_free_api::{Config, OpenAIAdapter, StreamResponse};
 use bytes::Bytes;
+use ds_free_api::{Config, OpenAIAdapter, StreamResponse};
 use futures::{StreamExt, future::join_all};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -48,7 +48,7 @@ fn read_line_lossy() -> io::Result<String> {
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::new().default_filter_or("info")).init();
 
-    let config = Config::load("config.toml")?;
+    let config = Config::load_with_args(std::env::args())?;
     println!("[初始化中...]");
     let adapter = OpenAIAdapter::new(&config).await?;
     println!(

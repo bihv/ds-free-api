@@ -2,7 +2,7 @@
 //!
 //! 当前限制：
 //! - 多轮对话通过 ChatML 格式压缩为单个 prompt 字符串
-//! - tool 定义以自然语言注入到最后一条 user 消息中
+//! - tool 定义以独立 reminder 块注入到 assistant 前面
 
 use log::debug;
 
@@ -546,7 +546,7 @@ mod tests {
     // tools injection 位置：追加到最后一个 user message
 
     #[test]
-    fn tools_appended_to_last_user_message() {
+    fn tools_as_reminder_before_assistant() {
         let body = serde_json::json!({
             "model": "deepseek-default",
             "messages": [
@@ -560,16 +560,59 @@ mod tests {
         });
         let req = parse_json(body).unwrap();
         let prompt = &req.ds_req.prompt;
-        // 确保 defs 出现在第二个 user 消息块中，而不是第一个
-        let first_user_end = prompt.find("<|im_end|>\n<|im_start|>assistant").unwrap();
-        let second_user_start = prompt.find("<|im_start|>user\n第二个问题").unwrap();
+        // 工具定义应在独立的 reminder 块中，紧邻 assistant 前面
         assert!(
-            !prompt[..first_user_end].contains("你可以使用以下工具"),
-            "工具定义不应出现在第一个 user 消息中"
+            !prompt.contains("<|im_start|>user\n第二个问题\n\n你可以使用以下工具"),
+            "工具定义不应追加到 user 消息中"
         );
         assert!(
-            prompt[second_user_start..].contains("你可以使用以下工具"),
-            "工具定义应出现在最后一个 user 消息中"
+            prompt.contains("<|im_start|>reminder\n你可以使用以下工具"),
+            "工具定义应在独立的 reminder 块中"
         );
+        // reminder 块应在最后的 assistant 前缀前面
+        let reminder_pos = prompt.find("<|im_start|>reminder").unwrap();
+        let assistant_pos = prompt.rfind("<|im_start|>assistant").unwrap();
+        assert!(
+            reminder_pos < assistant_pos,
+            "reminder 块应在最后的 assistant 前面"
+        );
+    }
+
+    #[test]
+    fn tools_after_tool_role_message() {
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [
+                { "role": "user", "content": "北京天气？" },
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": { "name": "get_weather", "arguments": "{\"city\":\"北京\"}" }
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "晴，25°C"
+                }
+            ],
+            "tools": [
+                { "type": "function", "function": { "name": "get_weather", "description": "获取天气" } }
+            ],
+            "tool_choice": "auto"
+        });
+        let req = parse_json(body).unwrap();
+        let prompt = &req.ds_req.prompt;
+        // 即使最后一条是 tool role，reminder 块也应紧跟在 assistant 前面
+        assert!(
+            prompt.contains("<|im_start|>reminder\n你可以使用以下工具"),
+            "工具定义应在独立的 reminder 块中"
+        );
+        let reminder_pos = prompt.find("<|im_start|>reminder").unwrap();
+        let assistant_pos = prompt.rfind("<|im_start|>assistant").unwrap();
+        assert!(reminder_pos < assistant_pos);
     }
 }

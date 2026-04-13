@@ -370,7 +370,7 @@ mod tests {
     async fn aggregate_tool_calls() {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls><tool_call name=\\\"get_weather\\\" arguments=\\\"{&quot;city&quot;:&quot;beijing&quot;}\\\" /></tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
         let json = aggregate(stream, "deepseek-default".into(), vec![])
@@ -395,7 +395,7 @@ mod tests {
     async fn aggregate_tool_calls_with_trailing_text() {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls><tool_call name=\\\"get_weather\\\" arguments=\\\"{}\\\" /></tool_calls> trailing text\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {}}]</tool_calls> trailing text\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
         let json = aggregate(stream, "deepseek-default".into(), vec![])
@@ -455,10 +455,21 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("===================================\n");
-        assert_eq!(chunks.len(), 3);
+        // 内容 "hi" (2 bytes) < W=19，会在缓冲区中延迟释放，
+        // 可能与 finish_reason 合并在同一个 chunk 中
+        assert!(chunks.len() >= 2);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        assert_eq!(chunks[1]["choices"][0]["delta"]["content"], "hi");
-        assert_eq!(chunks[2]["choices"][0]["finish_reason"], "stop");
+        // 所有 content 合并后应为 "hi"
+        let all_content: String = chunks
+            .iter()
+            .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+            .collect();
+        assert_eq!(all_content, "hi");
+        // 最终 finish_reason
+        assert_eq!(
+            chunks.last().unwrap()["choices"][0]["finish_reason"],
+            "stop"
+        );
     }
 
     #[tokio::test]
@@ -477,19 +488,32 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("======================================\n");
-        assert_eq!(chunks.len(), 4);
+        assert!(chunks.len() >= 3);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        assert_eq!(chunks[1]["choices"][0]["delta"]["content"], "x");
-        assert_eq!(chunks[2]["choices"][0]["finish_reason"], "stop");
-        assert!(chunks[3]["choices"].as_array().unwrap().is_empty());
-        assert_eq!(chunks[3]["usage"]["completion_tokens"], 12);
+        // 所有 content 合并后应为 "x"
+        let all_content: String = chunks
+            .iter()
+            .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+            .collect();
+        assert_eq!(all_content, "x");
+        // usage chunk
+        let usage_chunk = chunks
+            .iter()
+            .find(|c| c["usage"]["completion_tokens"].as_i64() == Some(12));
+        assert!(usage_chunk.is_some(), "should have usage chunk");
+        // finish_reason 在含 choices 的最后一个 chunk 中
+        let finish_chunk = chunks.iter().rev().find(|c| {
+            c["choices"].as_array().map_or(false, |a| !a.is_empty())
+                && c["choices"][0]["finish_reason"].as_str().is_some()
+        });
+        assert_eq!(finish_chunk.unwrap()["choices"][0]["finish_reason"], "stop");
     }
 
     #[tokio::test]
     async fn stream_tool_calls() {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls><tool_call name=\\\"f\\\" arguments=\\\"{}\\\" /></tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]</tool_calls>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -506,17 +530,27 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("===================================\n");
-        assert_eq!(chunks.len(), 2);
+        assert!(chunks.len() >= 2);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        assert!(chunks[1]["choices"][0]["delta"]["content"].is_null());
-        assert_eq!(
-            chunks[1]["choices"][0]["delta"]["tool_calls"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
+        // 某个 chunk 应包含 tool_calls
+        let has_tool_calls = chunks
+            .iter()
+            .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
+        assert!(has_tool_calls, "should have a tool_calls chunk");
+        // content 不应包含 <tool_calls> 残留
+        let all_content: String = chunks
+            .iter()
+            .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+            .collect();
+        assert!(
+            !all_content.contains("<tool_calls>"),
+            "content should not contain tool_calls tags"
         );
-        assert_eq!(chunks[1]["choices"][0]["finish_reason"], "tool_calls");
+        // finish
+        assert_eq!(
+            chunks.last().unwrap()["choices"][0]["finish_reason"],
+            "tool_calls"
+        );
     }
 
     #[tokio::test]
@@ -524,8 +558,8 @@ mod tests {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"思考中\"}]}}}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls><tool_call name=\\\"get_\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"weather\\\" arguments='{\\\"city\\\":\\\"北京\\\"}' />\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"北京\\\"}}]\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
@@ -543,20 +577,34 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("============================================================\n");
-        assert_eq!(chunks.len(), 4);
+        assert!(chunks.len() >= 3);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        assert_eq!(
-            chunks[1]["choices"][0]["delta"]["reasoning_content"],
-            "思考中"
-        );
-        assert!(chunks[2]["choices"][0]["delta"]["content"].is_null());
-        let calls = chunks[2]["choices"][0]["delta"]["tool_calls"]
+        // reasoning_content 应包含思考内容
+        let all_reasoning: String = chunks
+            .iter()
+            .filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str())
+            .collect();
+        assert!(all_reasoning.contains("思考中"), "should contain 思考中");
+        // 某个 chunk 应包含 tool_calls
+        let has_tool_calls = chunks
+            .iter()
+            .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
+        assert!(has_tool_calls, "should have a tool_calls chunk");
+        let tc_chunk = chunks
+            .iter()
+            .find(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some())
+            .unwrap();
+        let calls = tc_chunk["choices"][0]["delta"]["tool_calls"]
             .as_array()
             .unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["function"]["name"], "get_weather");
         assert_eq!(calls[0]["function"]["arguments"], r#"{"city":"北京"}"#);
-        assert_eq!(chunks[3]["choices"][0]["finish_reason"], "tool_calls");
+        // finish
+        assert_eq!(
+            chunks.last().unwrap()["choices"][0]["finish_reason"],
+            "tool_calls"
+        );
     }
 
     #[tokio::test]
@@ -585,25 +633,34 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("=============================================\n");
-        assert_eq!(chunks.len(), 5);
+        assert!(chunks.len() >= 3);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
+        // 所有 reasoning 合并后应包含 "思考" 和 "继续"
+        let all_reasoning: String = chunks
+            .iter()
+            .filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str())
+            .collect();
+        assert!(all_reasoning.contains("思考"), "should contain 思考");
+        assert!(all_reasoning.contains("继续"), "should contain 继续");
+        // 所有 content 合并后应为 "hello"
+        let all_content: String = chunks
+            .iter()
+            .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+            .collect();
+        assert_eq!(all_content, "hello");
+        // finish_reason
         assert_eq!(
-            chunks[1]["choices"][0]["delta"]["reasoning_content"],
-            "思考"
+            chunks.last().unwrap()["choices"][0]["finish_reason"],
+            "stop"
         );
-        assert_eq!(
-            chunks[2]["choices"][0]["delta"]["reasoning_content"],
-            "继续"
-        );
-        assert_eq!(chunks[3]["choices"][0]["delta"]["content"], "hello");
-        assert_eq!(chunks[4]["choices"][0]["finish_reason"], "stop");
     }
 
     #[tokio::test]
     async fn stream_include_obfuscation() {
+        // 使用足够长的文本（> W=19）确保内容经过完整的流式路径和 obfuscation
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"x\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"这是一段足够长的中文文本用于测试混淆\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -618,18 +675,311 @@ mod tests {
             );
         }
         println!("============================================\n");
-        assert_eq!(chunks.len(), 3);
-        // 所有含 choices 的 chunk 都应被动态 padding 到目标长度附近
+        assert!(chunks.len() >= 2);
+        // 所有含 choices 且有 content 的 chunk 都应被动态 padding 到目标长度附近
         for c in &chunks {
-            assert!(c["choices"][0]["delta"]["obfuscation"].as_str().is_some());
-            let len = serde_json::to_string(c).unwrap().len();
-            assert!(
-                len >= 490 && len <= 530,
-                "chunk len {} out of expected 490..=530 range",
-                len
+            if c["choices"][0]["delta"]["content"].as_str().is_some()
+                || c["choices"][0]["finish_reason"].as_str().is_some()
+            {
+                assert!(
+                    c["choices"][0]["delta"]["obfuscation"].as_str().is_some(),
+                    "chunk with content or finish_reason should have obfuscation"
+                );
+                let len = serde_json::to_string(c).unwrap().len();
+                assert!(
+                    len >= 490 && len <= 530,
+                    "chunk len {} out of expected 490..=530 range",
+                    len
+                );
+            }
+        }
+        // 内容完整
+        let all_content: String = chunks
+            .iter()
+            .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+            .collect();
+        assert!(
+            all_content.contains("足够长的中文文本"),
+            "should contain expected text, got {all_content:?}"
+        );
+        // finish_reason
+        assert_eq!(
+            chunks.last().unwrap()["choices"][0]["finish_reason"],
+            "stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_tool_calls_with_leading_text() {
+        let fixture = "event: ready\ndata: {}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
+            event: finish\ndata: {}\n\n";
+        let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let json = aggregate(stream, "deepseek-default".into(), vec![])
+            .await
+            .unwrap();
+        let completion: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        println!("\n=== AGGREGATED RESPONSE (tool_calls with leading text) ===");
+        println!("{}", serde_json::to_string_pretty(&completion).unwrap());
+        println!("===========================================================\n");
+        // 前导文本作为 content，tool_calls 结构化
+        assert_eq!(
+            completion["choices"][0]["message"]["content"],
+            "好的，我来帮你。"
+        );
+        let calls = completion["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["function"]["name"], "get_weather");
+        assert_eq!(calls[0]["function"]["arguments"], r#"{"city":"beijing"}"#);
+        assert_eq!(completion["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn stream_tool_calls_with_leading_text_fragmented() {
+        // 模拟真实场景：前导文本 + 碎片化 JSON <tool_calls>
+        let fixture = "event: ready\ndata: {}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你用豆包生成图片。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<too\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"l_calls>[{\\\"name\\\": \\\"astrbot_execute_shell\\\", \\\"arguments\\\": {\\\"command\\\": \\\"cat /data/astrbot/skills/doubao-image-gen/SKILL.md\\\"}}]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
+            event: finish\ndata: {}\n\n";
+        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let chunks = collect_chunks(super::stream(
+            bytes_stream,
+            "m".into(),
+            false,
+            false,
+            vec![],
+        ))
+        .await;
+        println!("\n=== STREAM CHUNKS (tool_calls with leading text, fragmented) ===");
+        for (i, c) in chunks.iter().enumerate() {
+            println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
+        }
+        println!("====================================================================\n");
+        // 验证核心语义：前导文本 + tool_calls + finish_reason
+        assert!(chunks.len() >= 2);
+        assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
+        // 所有 content 合并后应包含前导文本
+        let all_content: String = chunks
+            .iter()
+            .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+            .collect();
+        assert!(
+            all_content.contains("好的，我来帮你用豆包生成图片"),
+            "should contain leading text, got {all_content:?}"
+        );
+        // 某个 chunk 应包含 tool_calls
+        let has_tool_calls = chunks
+            .iter()
+            .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
+        assert!(has_tool_calls, "should have a tool_calls chunk");
+        let tc_chunk = chunks
+            .iter()
+            .find(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some())
+            .unwrap();
+        let calls = tc_chunk["choices"][0]["delta"]["tool_calls"]
+            .as_array()
+            .unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["function"]["name"], "astrbot_execute_shell");
+        // finish
+        let last = chunks.last().unwrap();
+        assert_eq!(last["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn stream_tool_calls_with_leading_text_multi_chunk_fragments() {
+        // 更真实的碎片化场景：JSON 被分成多块
+        // chunk 1: leading text
+        // chunk 2: <tool_calls>[{"name": "f", "arguments": {}}
+        // chunk 3: ]
+        // chunk 4: </tool_calls>
+        // chunk 5: FINISHED status
+        let fixture = "event: ready\ndata: {}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"让我来查一下。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
+            event: finish\ndata: {}\n\n";
+        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let chunks = collect_chunks(super::stream(
+            bytes_stream,
+            "m".into(),
+            false,
+            false,
+            vec![],
+        ))
+        .await;
+        println!("\n=== STREAM CHUNKS (leading text + multi-chunk JSON fragments) ===");
+        for (i, c) in chunks.iter().enumerate() {
+            println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
+        }
+        println!("=============================================================\n");
+        // 应该输出: role, leading text, tool_calls, finish
+        for (i, c) in chunks.iter().enumerate() {
+            eprintln!(
+                "chunk[{}] content={:?} tool_calls={:?} finish={:?}",
+                i,
+                c["choices"][0]["delta"]["content"],
+                c["choices"][0]["delta"]["tool_calls"],
+                c["choices"][0]["finish_reason"]
             );
         }
-        assert_eq!(chunks[1]["choices"][0]["delta"]["content"], "x");
-        assert_eq!(chunks[2]["choices"][0]["finish_reason"], "stop");
+        // 必须有 tool_calls chunk
+        let has_tool_calls = chunks
+            .iter()
+            .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
+        assert!(has_tool_calls, "should have a tool_calls chunk but didn't");
+        let last = chunks.last().unwrap();
+        assert_eq!(last["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn stream_tool_calls_with_thinking_then_leading_text_then_fragmented_json() {
+        // 最完整的生产场景：thinking -> leading text -> 碎片化 <tool_calls>
+        let fixture = "event: ready\ndata: {}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"用户要查天气，我需要调用工具\"}]}}}\n\n\
+            data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你查\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"一下。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
+            event: finish\ndata: {}\n\n";
+        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let chunks = collect_chunks(super::stream(
+            bytes_stream,
+            "m".into(),
+            false,
+            false,
+            vec![],
+        ))
+        .await;
+        println!("\n=== STREAM CHUNKS (thinking + leading + fragmented JSON) ===");
+        for (i, c) in chunks.iter().enumerate() {
+            println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
+        }
+        println!("=============================================================\n");
+        for (i, c) in chunks.iter().enumerate() {
+            eprintln!(
+                "chunk[{}] content={:?} reasoning={:?} tool_calls={:?} finish={:?}",
+                i,
+                c["choices"][0]["delta"]["content"],
+                c["choices"][0]["delta"]["reasoning_content"],
+                c["choices"][0]["delta"]["tool_calls"],
+                c["choices"][0]["finish_reason"]
+            );
+        }
+        // 必须有 tool_calls chunk
+        let has_tool_calls = chunks
+            .iter()
+            .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
+        assert!(has_tool_calls, "should have a tool_calls chunk but didn't");
+        let last = chunks.last().unwrap();
+        assert_eq!(last["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn stream_tool_calls_json_split_right_after_tag() {
+        // 真实碎片化场景：<tool_calls> 完整，但内容在后续 chunk 中
+        // chunk 1: leading text
+        // chunk 2: <tool_calls>[{"name": "f", "arguments": {}}]
+        // chunk 3: </tool_calls>  ← 单独一个 chunk
+        // chunk 4: FINISHED
+        let fixture = "event: ready\ndata: {}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
+            event: finish\ndata: {}\n\n";
+        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let chunks = collect_chunks(super::stream(
+            bytes_stream,
+            "m".into(),
+            false,
+            false,
+            vec![],
+        ))
+        .await;
+        println!("\n=== STREAM CHUNKS (JSON split right after tool_call) ===");
+        for (i, c) in chunks.iter().enumerate() {
+            println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
+        }
+        println!("=============================================================\n");
+        let has_tool_calls = chunks
+            .iter()
+            .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
+        assert!(has_tool_calls, "should have a tool_calls chunk but didn't");
+        let last = chunks.last().unwrap();
+        assert_eq!(last["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn stream_tool_calls_no_leading_text() {
+        // 最常见的生产场景：无 leading text，模型直接输出 <tool_calls>
+        let fixture = "event: ready\ndata: {}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
+            event: finish\ndata: {}\n\n";
+        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let chunks = collect_chunks(super::stream(
+            bytes_stream,
+            "deepseek-default".into(),
+            false,
+            false,
+            vec![],
+        ))
+        .await;
+        println!("\n=== STREAM CHUNKS (tool_calls, no leading text) ===");
+        for (i, c) in chunks.iter().enumerate() {
+            println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
+        }
+        println!("===================================================\n");
+        // 应该有 role chunk + tool_calls chunk + finish chunk
+        for (i, c) in chunks.iter().enumerate() {
+            eprintln!(
+                "chunk[{}] content={:?} tool_calls={:?} finish={:?}",
+                i,
+                c["choices"][0]["delta"]["content"],
+                c["choices"][0]["delta"]["tool_calls"],
+                c["choices"][0]["finish_reason"]
+            );
+        }
+        assert!(
+            chunks.len() >= 2,
+            "expected at least 2 chunks, got {}",
+            chunks.len()
+        );
+        assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
+        // 找包含 tool_calls 的 chunk
+        let tc_idx = chunks
+            .iter()
+            .position(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some())
+            .expect("should have a chunk with tool_calls");
+        let tc_chunk = &chunks[tc_idx];
+        let calls = tc_chunk["choices"][0]["delta"]["tool_calls"]
+            .as_array()
+            .unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["function"]["name"], "get_weather");
+        assert_eq!(calls[0]["function"]["arguments"], r#"{"city":"beijing"}"#);
+        // 最后一个 chunk 的 finish_reason 应该是 tool_calls
+        let last = chunks.last().unwrap();
+        assert_eq!(
+            last["choices"][0]["finish_reason"], "tool_calls",
+            "finish_reason should be tool_calls, got {:?}",
+            last["choices"][0]["finish_reason"]
+        );
     }
 }

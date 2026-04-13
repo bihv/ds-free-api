@@ -12,8 +12,8 @@
 //!   source <file>                                - 从文件读取命令执行
 //!   quit | exit                                  - 退出并清理
 
-use ai_free_api::{ChatRequest, Config, DeepSeekCore};
 use bytes::Bytes;
+use ds_free_api::{ChatRequest, Config, DeepSeekCore};
 use futures::{StreamExt, future::join_all};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -47,7 +47,7 @@ fn read_line_lossy() -> io::Result<String> {
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::new().default_filter_or("info")).init();
 
-    let config = Config::load("config.toml")?;
+    let config = Config::load_with_args(std::env::args())?;
     let mut current_model_type = config
         .deepseek
         .model_types
@@ -118,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
                         if raw {
                             println!("[响应流开始 - raw]");
                             while let Some(chunk) = stream.next().await {
-                                let chunk: Result<Bytes, ai_free_api::CoreError> = chunk;
+                                let chunk: Result<Bytes, ds_free_api::CoreError> = chunk;
                                 match chunk {
                                     Ok(bytes) => {
                                         print!("{}", String::from_utf8_lossy(&bytes));

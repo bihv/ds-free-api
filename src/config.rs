@@ -14,6 +14,8 @@ pub struct Config {
     /// DeepSeek 相关配置
     #[serde(default)]
     pub deepseek: DeepSeekConfig,
+    /// HTTP 服务器配置（必填）
+    pub server: ServerConfig,
 }
 
 /// 单个账号配置
@@ -80,6 +82,29 @@ impl DeepSeekConfig {
         }
         map
     }
+}
+
+/// HTTP 服务器配置（必填）
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    /// 监听地址
+    pub host: String,
+    /// 监听端口
+    pub port: u16,
+    /// API 访问令牌列表，留空则不鉴权
+    #[serde(default)]
+    pub api_tokens: Vec<ApiToken>,
+    // TODO: admin_password — 等控制面板端点实现时再加
+}
+
+/// API 访问令牌
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApiToken {
+    /// 令牌值（如 sk-xxx）
+    pub token: String,
+    /// 描述说明
+    #[serde(default)]
+    pub description: String,
 }
 
 /// 默认 API 基础地址

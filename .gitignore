@@ -8,3 +8,4 @@ config.toml
 
 # tmp文件
 **/tmp.*
+**/tmp_*
