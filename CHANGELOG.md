@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.3] - 2026-04-24
+
+### Added
+- Tool call XML 解析增强：增加 `repair_invalid_backslashes` 与 `repair_unquoted_keys`
+  宽松修复，当模型输出的 JSON 包含未引号 key 或无效转义时自动修复后重试
+- 增加 `is_inside_code_fence` 检查：跳过 markdown 代码块中的工具示例，防止误解析
+- 新增 Anthropic 协议压测脚本 `stress_test_tools_anthropic.py`，与 OpenAI 版对称
+- 示例文件正交化：`examples/adapter_cli/` 下按功能拆分为
+  `basic_chat`/`stream`/`stop`/`reasoning`/`web_search`/`reasoning_search`/`tool_call` 等独立文件
+- 默认 adapter-cli 配置文件路径指向 `py-e2e-tests/config.toml`
+
+### Changed
+- 账号池选择策略：从**轮询线性探测**改为**空闲最久优先**，最大化账号复用间隔
+- 移除固定的冷却时间常量，选择算法天然避免账号被过快重用
+- 同步更新中英文 README，增加并发经验说明
+
+### Stress Test Results
+
+针对 4 账号池的 70 请求压测（7 场景 × 2 模型 × 5 迭代）：
+
+| 策略 | 并发 | 成功率 | 平均耗时 |
+|------|------|--------|----------|
+| 轮询 + 无冷却 | 3 | 25.7% | 2.57s |
+| 轮询 + 2s 冷却 | 3 | 97.1% | 10.46s |
+| **空闲最久优先 + 无冷却** | **2** | **100%** | **10.14s** |
+| **空闲最久优先 + 无冷却 (Anthropic)** | **2** | **100%** | **11.31s** |
+
+结论：稳定安全并发 ≈ 账号数 ÷ 2，空闲最久优先策略可在不设冷却的前提下实现 100% 成功率。
+
 ## [0.2.2] - 2026-04-22
 
 ### Added
