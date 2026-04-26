@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@theme {
+  /* Surfaces mapped to dynamic variables */
+  --color-surface-50: var(--bg-surface-50);
+  --color-surface-100: var(--bg-surface-100);
+  --color-surface-200: var(--bg-surface-200);
+  --color-surface-300: var(--bg-surface-300);
+  --color-surface-400: var(--bg-surface-400);
+
+  /* Accent colors */
+  --color-accent-primary: #c96442; /* Terracotta Brand */
+  --color-accent-secondary: #d97757; /* Coral Accent */
+
+  /* Status Colors */
+  --color-success: #538d53; /* Warm, muted green */
+  --color-warning: #c98e42; /* Warm amber */
+  --color-danger: #b53333; /* Error Crimson */
+
+  /* Text Colors */
+  --color-text-primary: var(--txt-primary);
+  --color-text-secondary: var(--txt-secondary);
+  --color-text-muted: var(--txt-muted);
+
+  /* Typography */
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+
+  /* Component specifics */
+  --shadow-whisper: 0px 4px 24px var(--shadow-whisper-clr);
+  --shadow-ring: 0px 0px 0px 1px var(--color-surface-400);
+}
+
+@layer base {
+  :root {
+    /* Light Mode (Parchment Foundation) */
+    --bg-surface-50: #f5f4ed; /* Parchment */
+    --bg-surface-100: #faf9f5; /* Ivory */
+    --bg-surface-200: #e8e6dc; /* Warm Sand */
+    --bg-surface-300: #f0eee6; /* Border Cream */
+    --bg-surface-400: #d1cfc5; /* Ring shadow warm */
+
+    --txt-primary: #141413; /* Near Black */
+    --txt-secondary: #5e5d59; /* Olive Gray */
+    --txt-muted: #87867f; /* Stone Gray */
+
+    --shadow-whisper-clr: rgba(0, 0, 0, 0.05);
+  }
+
+  :root.dark {
+    /* Dark Mode Foundation */
+    --bg-surface-50: #141413; /* Near Black */
+    --bg-surface-100: #30302e; /* Dark Surface */
+    --bg-surface-200: #4d4c48; /* Charcoal Warm */
+    --bg-surface-300: #42413d; /* Border Darker */
+    --bg-surface-400: #5e5d59; /* Ring shadow for dark */
+
+    --txt-primary: #faf9f5; /* Ivory */
+    --txt-secondary: #b0aea5; /* Warm Silver */
+    --txt-muted: #87867f; /* Stone Gray */
+
+    --shadow-whisper-clr: rgba(0, 0, 0, 0.2);
+  }
+
+  body {
+    @apply bg-surface-50 text-text-primary font-sans antialiased transition-colors duration-300;
+    line-height: 1.6;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif font-medium;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-surface-300) transparent;
+  }
+}
