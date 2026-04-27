@@ -38,13 +38,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Test Results
 
-## py-e2e-tests
+#### py-e2e-tests
 - **4 账号 + 3 并发 + 3 迭代**：17 场景 × 2 模型 × 3 次 = 102 次请求，成功率 100%，总耗时 5.5 分钟
 - 覆盖场景：基础对话、深度思考、流式、标准工具调用，以及 10 种 tool_calls 损坏格式
   （XML/JSON 混合、字段名不一致、arguments 字符串、括号不匹配/缺失、
   name/arguments 互换、参数外溢等），修复管道全部正确兜底
 
-## claude-code 测试
+#### claude-code 测试
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:5317/anthropic
 export ANTHROPIC_AUTH_TOKEN=sk-test
